@@ -4,7 +4,9 @@ import argparse
 import logging
 import requests
 from bs4 import BeautifulSoup
+from bs4.element import Comment
 import re
+import sys
 import os  # Import the 'os' module
 
 # Configure logging
@@ -31,7 +33,7 @@ def fetch_html(url):
         str: The HTML content, or None if an error occurred.
     """
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
         return response.text
     except requests.exceptions.RequestException as e:
@@ -69,20 +71,29 @@ def analyze_comments(html_content):
         list: A list of tuples, where each tuple contains the comment text and its location.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
-    comments = soup.find_all(string=lambda text: isinstance(text, BeautifulSoup.Comment))
+    comments = soup.find_all(string=lambda text: isinstance(text, Comment))
     findings = []
     sensitive_patterns = [
-        r"(password|pwd|secret|key|token)\s*[:=]\s*[\w\d\-_]+",
-        r"jdbc:mysql://[\w\d.:/]+",  # Example: JDBC connection string
-        r"api_key\s*=\s*[\w\d\-]+",
-        r"database\s*=\s*[\w\d\-]+",
+        ("credential", r"(password|pwd|secret|key|token)\s*[:=]\s*([\w\d\-_]+)"),
+        ("jdbc connection string", r"(jdbc:mysql://[\w\d.:/]+)"),
+        ("api_key", r"api_key\s*=\s*([\w\d\-]+)"),
+        ("database", r"database\s*=\s*([\w\d\-]+)"),
     ]
 
     for comment in comments:
-        for pattern in sensitive_patterns:
-            if re.search(pattern, comment, re.IGNORECASE):
-                 findings.append((str(comment).strip(), "HTML Comment"))
-                 break #Avoid multiple matches on the same comment.
+        text = str(comment)
+        matched_type = None
+        masked = text
+        for pattern_type, pattern in sensitive_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                if matched_type is None:
+                    matched_type = pattern_type
+                # Mask the captured value in every pattern that matches,
+                # so no matched value reaches any output route in clear.
+                masked = re.sub(pattern, lambda m: m.group(0).replace(m.group(m.lastindex), "***"),
+                                masked, flags=re.IGNORECASE)
+        if matched_type is not None:
+            findings.append((masked.strip(), "HTML Comment", matched_type))
 
     return findings
 
@@ -96,8 +107,8 @@ def write_results(findings, output_file=None):
     """
     if findings:
         output_string = "Findings:\n"
-        for comment, location in findings:
-            output_string += f"- Location: {location}\n  Comment: {comment}\n"
+        for comment, location, pattern_type in findings:
+            output_string += f"- Location: {location}\n  Pattern: {pattern_type}\n  Comment: {comment}\n"
 
         if output_file:
             try:
@@ -148,11 +159,12 @@ def main():
         logging.info(f"Analyzing file: {input_source}")
         html_content = read_html_file(input_source)
 
-    if html_content:
+    if html_content is not None:
         findings = analyze_comments(html_content)
         write_results(findings, args.output)
     else:
         logging.error("Failed to retrieve HTML content.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
