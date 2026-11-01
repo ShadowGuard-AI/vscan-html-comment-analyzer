@@ -82,6 +82,10 @@ def analyze_comments(html_content):
 
     for comment in comments:
         text = str(comment)
+        # The label kept is the first pattern in list order that matches, but
+        # masking runs for every matching pattern. A comment matching both
+        # credential and api_key is filed under credential alone, so counts
+        # by type understate the later patterns.
         matched_type = None
         masked = text
         for pattern_type, pattern in sensitive_patterns:
@@ -90,9 +94,18 @@ def analyze_comments(html_content):
                     matched_type = pattern_type
                 # Mask the captured value in every pattern that matches,
                 # so no matched value reaches any output route in clear.
+                # Masking replaces the captured value as a substring, and the value
+                # character classes stop at dots and plus signs. A value containing
+                # one of those is masked only up to it, and the remainder of the
+                # value stays in the output in clear. That is the one leak path I
+                # know of in this masking, and it needs a wider class, not more
+                # patterns.
                 masked = re.sub(pattern, lambda m: m.group(0).replace(m.group(m.lastindex), "***"),
                                 masked, flags=re.IGNORECASE)
         if matched_type is not None:
+            # Location is the same literal for every finding. No line number or
+            # position is kept, so two findings from different ends of a large
+            # page can only be told apart by their text.
             findings.append((masked.strip(), "HTML Comment", matched_type))
 
     return findings
@@ -134,6 +147,10 @@ def is_url(input_string):
     """
     try:
         result = requests.compat.urlparse(input_string)
+        # Any scheme passes this test, so an ftp or file style input is
+        # routed to the HTTP fetch and fails there, while a Windows style
+        # path can parse with a one letter scheme and be misrouted the
+        # same way.
         return all([result.scheme, result.netloc])
     except:
         return False
